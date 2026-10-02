@@ -1,36 +1,59 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
 import ScanResult from "./_components/ScanResult";
+import ScanCompare from "./_components/ScanCompare";
 
 const MODES = [
   { id: "basic", label: "Basic", desc: "Recon, dirs, headers, CORS, tech, secrets — non-intrusive" },
   { id: "advanced", label: "Advanced", desc: "Everything + XSS, SQLi, redirect, CVEs, real bypass attempts + remote browser", hot: true },
   { id: "custom", label: "Custom", desc: "Advanced + your own paths / instructions" },
 ];
-
 const RUNNING = new Set(["queued", "running", "dispatched"]);
+const SEV_COLOR = { critical: "#ff2b4e", high: "#ff7a1a", medium: "#eab308", low: "#38bdf8", info: "#8b8b8b" };
+
+function loadHistory() { try { return JSON.parse(localStorage.getItem("bb_history") || "[]"); } catch { return []; } }
 
 export default function Home() {
   const [target, setTarget] = useState("");
   const [mode, setMode] = useState("basic");
   const [instructions, setInstructions] = useState("");
   const [authorized, setAuthorized] = useState(false);
-  const [job, setJob] = useState(null);        // {jobId,status,progress,stage,findingsSummary,coverage,error}
-  const [result, setResult] = useState(null);   // full result once completed
+  const [job, setJob] = useState(null);
+  const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [downloading, setDownloading] = useState("");
-  const [share, setShare] = useState(null);     // {url, expiresAt}
+  const [share, setShare] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [compare, setCompare] = useState(null);
+  const [comparing, setComparing] = useState(false);
   const pollRef = useRef(null);
 
   const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
 
-  const loadResult = useCallback(async (jobId) => {
+  const saveHistory = useCallback((list) => {
+    const trimmed = list.slice(0, 25);
+    try { localStorage.setItem("bb_history", JSON.stringify(trimmed)); } catch {}
+    setHistory(trimmed);
+  }, []);
+  const upsertHistory = useCallback((entry) => {
+    const list = loadHistory().filter((h) => h.jobId !== entry.jobId);
+    const prev = loadHistory().find((h) => h.jobId === entry.jobId) || {};
+    list.unshift({ ...prev, ...entry });
+    saveHistory(list);
+  }, [saveHistory]);
+
+  const loadResult = useCallback(async (jobId, meta) => {
     try {
       const r = await fetch(`/api/jobs/${jobId}/result`, { cache: "no-store" });
-      if (r.ok) setResult(await r.json());
+      if (r.ok) {
+        const data = await r.json();
+        setResult(data);
+        upsertHistory({ jobId, target: data.target || data.finalTarget || meta?.target, mode: data.mode || meta?.mode,
+          status: "completed", summary: data.summary || null, when: data.completedAt || Date.now() });
+      }
     } catch {}
-  }, []);
+  }, [upsertHistory]);
 
   const poll = useCallback((jobId) => {
     stopPoll();
@@ -42,39 +65,43 @@ export default function Home() {
         setJob(j);
         if (!RUNNING.has(j.status)) {
           stopPoll();
-          if (j.status === "completed") await loadResult(jobId);
-          else if (j.status === "failed") setError("Scan failed: " + (j.error || "unknown error"));
+          if (j.status === "completed") await loadResult(jobId, j);
+          else if (j.status === "failed") { setError("Scan failed: " + (j.error || "unknown error")); upsertHistory({ jobId, target: j.target, mode: j.mode, status: "failed", when: Date.now() }); }
         }
-      } catch (e) { /* transient; keep polling */ }
+      } catch {}
     };
     tick();
     pollRef.current = setInterval(tick, 3000);
-  }, [loadResult]);
+  }, [loadResult, upsertHistory]);
 
-  // Refresh / return recovery: resume the job from the URL (?job=) or localStorage.
+  const resumeJob = useCallback((jid) => {
+    setBusy(true); setResult(null); setCompare(null); setShare(null); setError("");
+    const u = new URL(window.location.href); u.searchParams.set("job", jid); window.history.replaceState({}, "", u);
+    try { localStorage.setItem("bb_job", jid); } catch {}
+    fetch(`/api/jobs/${jid}`, { cache: "no-store" }).then((r) => r.json()).then((j) => {
+      if (j && j.jobId) {
+        setJob(j); setTarget(j.target || ""); setMode(j.mode || "basic");
+        if (j.status === "completed") loadResult(j.jobId, j);
+        else if (RUNNING.has(j.status)) poll(j.jobId);
+        else if (j.status === "failed") setError("This scan failed: " + (j.error || ""));
+      }
+    }).catch(() => {}).finally(() => setBusy(false));
+  }, [poll, loadResult]);
+
   useEffect(() => {
+    setHistory(loadHistory());
     const url = new URL(window.location.href);
     let jid = url.searchParams.get("job");
     if (!jid) { try { jid = localStorage.getItem("bb_job"); } catch {} }
-    if (jid) {
-      setBusy(true);
-      fetch(`/api/jobs/${jid}`, { cache: "no-store" }).then(r => r.json()).then(j => {
-        if (j && j.jobId) {
-          setJob(j); setTarget(j.target || ""); setMode(j.mode || "basic");
-          if (j.status === "completed") loadResult(j.jobId);
-          else if (RUNNING.has(j.status)) poll(j.jobId);
-          else if (j.status === "failed") setError("Previous scan failed: " + (j.error || ""));
-        }
-      }).catch(() => {}).finally(() => setBusy(false));
-    }
+    if (jid) resumeJob(jid);
     return stopPoll;
-  }, [poll, loadResult]);
+  }, [resumeJob]);
 
   async function start() {
     if (!target.trim()) { setError("Enter a target URL"); return; }
     if (!authorized) { setError("Please confirm you are authorized to test this target."); return; }
     if (mode === "custom" && !instructions.trim()) { setError("Custom mode needs instructions"); return; }
-    setBusy(true); setError(""); setResult(null); setJob(null); setShare(null);
+    setBusy(true); setError(""); setResult(null); setJob(null); setShare(null); setCompare(null);
     try {
       const body = { target: target.trim(), mode, authorized: true, clientJobKey: `${target.trim()}|${mode}|${Date.now()}` };
       if (mode === "custom") body.params = { custom: instructions };
@@ -84,14 +111,14 @@ export default function Home() {
       try { localStorage.setItem("bb_job", j.jobId); } catch {}
       const u = new URL(window.location.href); u.searchParams.set("job", j.jobId); window.history.replaceState({}, "", u);
       setJob({ jobId: j.jobId, status: j.status || "queued", progress: 0 });
+      upsertHistory({ jobId: j.jobId, target: target.trim(), mode, status: j.status || "queued", when: Date.now() });
       poll(j.jobId);
-    } catch (e) {
-      setError(e.message || "Could not start scan");
-    } finally { setBusy(false); }
+    } catch (e) { setError(e.message || "Could not start scan"); }
+    finally { setBusy(false); }
   }
 
   function reset() {
-    stopPoll(); setJob(null); setResult(null); setError(""); setShare(null);
+    stopPoll(); setJob(null); setResult(null); setError(""); setShare(null); setCompare(null); setAuthorized(false);
     try { localStorage.removeItem("bb_job"); } catch {}
     const u = new URL(window.location.href); u.searchParams.delete("job"); window.history.replaceState({}, "", u);
   }
@@ -106,6 +133,21 @@ export default function Home() {
       setShare({ url: full, expiresAt: j.expiresAt });
       try { await navigator.clipboard.writeText(full); } catch {}
     } catch (e) { setError(e.message); }
+  }
+
+  async function compareWithPrevious() {
+    if (!job?.jobId || !result) return;
+    const tgt = result.target || result.finalTarget;
+    const prior = loadHistory().find((h) => h.jobId !== job.jobId && h.status === "completed" && h.target === tgt);
+    if (!prior) { setError("No previous completed scan of this target in your history to compare against."); return; }
+    setComparing(true); setError(""); setCompare(null);
+    try {
+      const r = await fetch(`/api/compare?a=${encodeURIComponent(prior.jobId)}&b=${encodeURIComponent(job.jobId)}`, { cache: "no-store" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "compare failed");
+      setCompare(d);
+    } catch (e) { setError(e.message); }
+    finally { setComparing(false); }
   }
 
   async function downloadReport(fmt) {
@@ -130,6 +172,7 @@ export default function Home() {
   }
 
   const scanning = job && RUNNING.has(job.status);
+  const priorExists = result && loadHistory().some((h) => h.jobId !== job?.jobId && h.status === "completed" && h.target === (result.target || result.finalTarget));
 
   return (
     <div className="bb-root">
@@ -147,6 +190,7 @@ export default function Home() {
         .bb-pre { background: #0a0e14; border: 1px solid #1f2733; border-radius: 6px; padding: 10px; font-size: 11px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
         .bb-bar { height: 8px; background: #0a0e14; border: 1px solid #1f2733; border-radius: 6px; overflow: hidden; }
         .bb-bar > div { height: 100%; background: linear-gradient(90deg,#16a34a,#58a6ff); transition: width .4s; }
+        .bb-hrow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:8px 0; border-bottom:1px solid #141a22; font-size:12px; }
         .bb-foot { text-align: center; color: #7d8590; font-size: 12px; padding: 26px 0 10px; }
         .bb-foot .heart { color: #ff2b4e; }
         @media (min-width: 640px) { .bb-root { padding: 24px; } .bb-dl { flex-direction: row; } .bb-dl-btn { width: auto; flex: 1; padding: 10px 14px; } }
@@ -173,7 +217,7 @@ export default function Home() {
             />
             <button onClick={scanning ? undefined : start} disabled={scanning || busy || !authorized} className="bb-btn"
               style={{ background: (scanning || !authorized) ? "#1f2733" : "#16a34a", color: "#fff", cursor: scanning ? "wait" : (!authorized ? "not-allowed" : "pointer") }}>
-              {scanning ? `SCANNING… ${job.progress || 0}%` : busy ? "…" : "START"}
+              {scanning ? `SCANNING… ${job.progress || 0}%` : busy ? "…" : "START SCAN"}
             </button>
           </div>
 
@@ -202,9 +246,7 @@ export default function Home() {
         </section>
 
         {error && (
-          <div style={{ marginTop: 16, border: "1px solid #ff2b4e", borderRadius: 8, padding: 14, color: "#ff2b4e", fontSize: 13, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-            ✗ {error}
-          </div>
+          <div style={{ marginTop: 16, border: "1px solid #ff2b4e", borderRadius: 8, padding: 14, color: "#ff2b4e", fontSize: 13, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>✗ {error}</div>
         )}
 
         {scanning && (
@@ -214,7 +256,7 @@ export default function Home() {
               <span>{job.progress || 0}%</span>
             </div>
             <div className="bb-bar"><div style={{ width: `${Math.max(5, job.progress || 0)}%` }} /></div>
-            <div style={{ fontSize: 11, color: "#6b7580", marginTop: 8 }}>You can close this page — the scan keeps running. Return any time; it will reload automatically.</div>
+            <div style={{ fontSize: 11, color: "#6b7580", marginTop: 8 }}>You can close this page — the scan keeps running. Return any time; it reloads automatically.</div>
           </div>
         )}
 
@@ -222,17 +264,23 @@ export default function Home() {
           <>
             <div style={{ marginTop: 16, display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button className="bb-btn" onClick={makeShare} style={{ background: "#1f6feb", color: "#fff" }}>🔗 Share report link</button>
+              {result && priorExists && (
+                <button className="bb-btn" onClick={compareWithPrevious} disabled={comparing} style={{ background: "#24303f", color: "#58a6ff" }}>
+                  {comparing ? "comparing…" : "↕ Compare with previous"}
+                </button>
+              )}
               <button className="bb-btn" onClick={reset} style={{ background: "#1f2733", color: "#d7dce3" }}>New scan</button>
             </div>
             {share && (
               <div className="bb-panel" style={{ marginTop: 10, borderColor: "#1f6feb" }}>
-                <div style={{ fontSize: 12, color: "#58a6ff", marginBottom: 6 }}>Shareable link (copied to clipboard) — expires {new Date(share.expiresAt).toLocaleString()}</div>
+                <div style={{ fontSize: 12, color: "#58a6ff", marginBottom: 6 }}>Shareable link (copied) — expires {new Date(share.expiresAt).toLocaleString()}</div>
                 <div className="bb-pre" style={{ color: "#c9d1d9" }}>{share.url}</div>
               </div>
             )}
           </>
         )}
 
+        {compare && <ScanCompare data={compare} />}
         {result && <ScanResult result={result} />}
 
         {result && (
@@ -245,6 +293,27 @@ export default function Home() {
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {history.length > 0 && (
+          <div className="bb-panel" style={{ marginTop: 18 }}>
+            <div style={{ fontSize: 12, color: "#7d8590", marginBottom: 6 }}>SCAN HISTORY (this browser)</div>
+            {history.map((h) => (
+              <div key={h.jobId} className="bb-hrow">
+                <button onClick={() => resumeJob(h.jobId)} style={{ background: "none", border: 0, color: "#58a6ff", cursor: "pointer", padding: 0, fontSize: 12, textAlign: "left", flex: 1, minWidth: 160, wordBreak: "break-all" }}>
+                  {h.target || h.jobId}
+                </button>
+                <span style={{ color: "#6b7580" }}>{h.mode}</span>
+                <span style={{ color: h.status === "completed" ? "#16a34a" : h.status === "failed" ? "#ff2b4e" : "#eab308" }}>{h.status}</span>
+                {h.summary && (
+                  <span style={{ display: "flex", gap: 6 }}>
+                    {["critical", "high", "medium", "low"].map((s) => (h.summary[s] ? <span key={s} style={{ color: SEV_COLOR[s] }}>{s[0].toUpperCase()}{h.summary[s]}</span> : null))}
+                  </span>
+                )}
+                <span style={{ color: "#6b7580" }}>{h.when ? new Date(h.when).toLocaleDateString() : ""}</span>
+              </div>
+            ))}
           </div>
         )}
 
