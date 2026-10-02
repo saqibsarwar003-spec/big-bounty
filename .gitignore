@@ -3,3 +3,5 @@ node_modules
 .vercel
 *.log
 deploy.sh
+azure/orchestrator/node_modules
+azure/worker/node_modules

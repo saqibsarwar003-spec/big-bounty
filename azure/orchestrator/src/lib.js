@@ -14,6 +14,7 @@
 import crypto from 'node:crypto';
 import { QueueServiceClient } from '@azure/storage-queue';
 import { TableClient } from '@azure/data-tables';
+import { BlobServiceClient } from '@azure/storage-blob';
 import { ManagedIdentityCredential } from '@azure/identity';
 
 const CONN = process.env.AzureWebJobsStorage;
@@ -29,6 +30,16 @@ export const AUTH_TTL_DAYS = Number(process.env.BIGBOUNTY_AUTH_TTL_DAYS || '30')
 export const SUBSCRIPTION_ID = process.env.BIGBOUNTY_SUBSCRIPTION_ID;
 export const VM_RG = process.env.BIGBOUNTY_VM_RG || 'New_group';
 export const VM_NAME = process.env.BIGBOUNTY_VM_NAME || 'New';
+export const RESULTS_CONTAINER = process.env.BIGBOUNTY_RESULTS_CONTAINER || 'bigbounty-results';
+
+/** Read a stored scan result blob (full findings/evidence/AI) as a JSON string. */
+export async function readResultBlob(blobName) {
+  const c = BlobServiceClient.fromConnectionString(CONN).getContainerClient(RESULTS_CONTAINER);
+  const dl = await c.getBlockBlobClient(blobName).download();
+  const chunks = [];
+  for await (const ch of dl.readableStreamBody) chunks.push(Buffer.isBuffer(ch) ? ch : Buffer.from(ch));
+  return Buffer.concat(chunks).toString('utf8');
+}
 
 // Private/reserved ranges a target must never resolve into (anti-SSRF / stop the
 // VM being used to pivot into internal infra). Hostname-level guard; the worker

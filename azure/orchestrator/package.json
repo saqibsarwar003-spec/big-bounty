@@ -4,11 +4,14 @@
   "description": "Big Bounty control plane: validates/authorizes jobs, dispatches to the VM worker via queue, tracks state, manages VM power.",
   "main": "src/index.js",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "@azure/functions": "^4.5.0",
     "@azure/storage-queue": "^12.24.0",
     "@azure/data-tables": "^13.3.0",
-    "@azure/identity": "^4.5.0"
+    "@azure/identity": "^4.5.0",
+    "@azure/storage-blob": "^12.25.0"
   }
 }

@@ -19,7 +19,7 @@ import {
   PARTITION, AUTH_PARTITION, AUTH_TTL_DAYS,
   queueClient, jobsTable, authTable, verifyHmac, readBody,
   normalizeDomain, isPublicHost, isAuthorizedRecord, recordAttestation,
-  vmPowerState, vmAction,
+  vmPowerState, vmAction, readResultBlob,
 } from './lib.js';
 
 async function auth(request, context) {
@@ -156,6 +156,26 @@ app.http('getJob', {
         createdAt: e.createdAt, updatedAt: e.updatedAt, attempts: e.attempts ?? 0,
       } };
     } catch { return { status: 404, jsonBody: { error: 'not found' } }; }
+  },
+});
+
+// ---- GET /api/jobs/{id}/result : full stored result (findings/evidence/AI) ----
+app.http('getJobResult', {
+  methods: ['GET'], authLevel: 'function', route: 'jobs/{id}/result',
+  handler: async (request, context) => {
+    const v = verifyHmac('', request.headers.get('x-signature'), request.headers.get('x-timestamp'));
+    if (!v.ok) return { status: 401, jsonBody: { error: 'unauthorized' } };
+    let e;
+    try { e = await jobsTable().getEntity(PARTITION, request.params.id); }
+    catch { return { status: 404, jsonBody: { error: 'not found' } }; }
+    if (!e.resultBlob) return { status: 409, jsonBody: { error: 'result not ready', status: e.status } };
+    try {
+      const json = await readResultBlob(e.resultBlob);
+      return { status: 200, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: json };
+    } catch (err) {
+      context.error(`result read failed: ${err.message}`);
+      return { status: 500, jsonBody: { error: 'could not read result' } };
+    }
   },
 });
 

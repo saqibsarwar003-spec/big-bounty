@@ -42,8 +42,10 @@ else
 fi
 
 echo "[bb] installing dependencies (engine + worker)"
-cd "$APP_DIR" && npm ci --omit=dev 2>/dev/null || npm install --omit=dev
-cd "$APP_DIR/azure/worker" && npm ci --omit=dev 2>/dev/null || npm install --omit=dev
+# The bundle normally ships node_modules at its root; only install if absent.
+if [ ! -d "$APP_DIR/node_modules" ]; then
+  cd "$APP_DIR" && (npm ci --omit=dev 2>/dev/null || npm install --omit=dev)
+fi
 
 echo "[bb] writing env file (600)"
 mkdir -p "$ENV_DIR"; : > "$ENV_FILE"; chmod 600 "$ENV_FILE"
