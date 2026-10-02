@@ -1,0 +1,27 @@
+[Unit]
+Description=Big Bounty scan worker (queue consumer -> existing engine)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bigbounty/azure/worker
+EnvironmentFile=/etc/bigbounty/worker.env
+ExecStart=/usr/bin/node index.mjs
+Restart=always
+RestartSec=5
+
+# Resource guards for the small VM (B2ats_v2: 2 vCPU / 1 GiB). The worker keeps
+# concurrency at 1 by default; these caps stop a runaway scan from OOM-killing
+# the box or starving the system.
+MemoryMax=768M
+CPUQuota=180%
+Nice=5
+OOMScoreAdjust=200
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bigbounty-worker
+
+[Install]
+WantedBy=multi-user.target
