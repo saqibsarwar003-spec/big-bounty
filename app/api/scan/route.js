@@ -1,4 +1,5 @@
 import { runScan } from '../../../lib/scanner';
+import { parseScanRequest } from '../../../lib/scan-plan';
 
 // Vercel Fluid Compute: up to 300s allowed on Hobby. Browser attacks + heavy
 // scans need this headroom; a hard kill here was the source of "[object Object]".
@@ -14,15 +15,13 @@ export async function POST(request) {
   try {
     body = await request.json();
   } catch {
-    return Response.json({ error: 'Invalid JSON body — send {"target":"https://example.com","mode":"basic|advanced|custom"}' }, { status: 400 });
+    return bad('Invalid JSON body — send {"target":"https://example.com","mode":"basic|advanced|custom"}');
   }
 
-  const target = (body.target || '').trim();
-  const mode = body.mode === 'advanced' || body.mode === 'custom' ? body.mode : 'basic';
-  const custom = typeof body.custom === 'string' ? body.custom : undefined;
-
-  if (!target) return Response.json({ error: 'target URL is required — e.g. https://example.com' }, { status: 400 });
-  if (mode === 'custom' && !custom) return Response.json({ error: 'custom mode requires "instructions" field' }, { status: 400 });
+  // Validation + field normalization (accepts "instructions" or legacy "custom").
+  const parsed = parseScanRequest(body);
+  if (parsed.error) return bad(parsed.error);
+  const { target, mode, instructions } = parsed;
 
   const enc = new TextEncoder();
   const started = Date.now();
@@ -32,7 +31,7 @@ export async function POST(request) {
       let closed = false;
       const send = (obj) => { if (!closed) { try { controller.enqueue(enc.encode(JSON.stringify(obj) + '\n')); } catch { closed = true; } } };
       try {
-        const result = await runScan(target, mode, custom, {
+        const result = await runScan(target, mode, instructions, {
           onPhase: (p) => send({ type: 'phase', ...p }),
         });
         send({ type: 'done', result: { ...result, apiDurationMs: Date.now() - started } });
