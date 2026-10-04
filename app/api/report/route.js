@@ -57,6 +57,22 @@ function mdReport(d) {
   L.push(`| INFO | ${s.info || 0} |`);
   L.push('');
   L.push(`**Total findings:** ${(d.findings || []).length} · **Tools used:** ${(d.toolsUsed || []).join(', ')}`);
+  if (d.verification && !d.verification.error) {
+    const v = d.verification;
+    L.push('');
+    L.push(`## Verification (DETECT → VERIFY → CORRELATE → SCORE)`);
+    L.push('');
+    if (v.wafPresent) L.push(`- Edge/WAF detected${v.wafVendor ? `: ${v.wafVendor}` : ''} — challenge/block responses are NOT treated as application vulnerabilities.`);
+    L.push(`- ${v.findingsIn} raw observations → ${v.findingsOut} after verification; ${v.falsePositivesRejected || 0} false positive(s) rejected, ${v.reclassified || 0} reclassified, ${v.collapsedIntoSurface || 0} collapsed into attack-surface.`);
+  }
+  if (d.coverageModel && d.coverageModel.model === 'structured') {
+    const cm = d.coverageModel;
+    L.push('');
+    L.push(`## Coverage`);
+    L.push('');
+    L.push(`- Phases executed: ${cm.executed}/${cm.planned}${cm.failed ? `, ${cm.failed} failed` : ''}${cm.skipped ? `, ${cm.skipped} skipped` : ''}`);
+    L.push(`- Edge/WAF-blocked findings: ${cm.blockedFindings} · Manual verification required: ${cm.manualVerificationRequired} · Credential-dependent tests not run: ${cm.credentialDependentNotRun}`);
+  }
   const ai = d.ai || null;
   if (ai && ai.executiveSummary) {
     L.push(`## AI Analyst Summary (${ai.aiProvider || 'AI'}, AI-generated)`);
@@ -115,8 +131,12 @@ function mdReport(d) {
     L.push('');
     L.push(`### ${i + 1}. [${String(f.severity).toUpperCase()}] ${f.title}`);
     L.push('');
-    L.push(`- **Tool:** ${f.tool}`);
-    if (f.fix) L.push(`- **Recommendation:** ${f.fix}`);
+    L.push(`- **Source module:** ${f.sourceModule || f.tool}`);
+    if (f.status) L.push(`- **Status:** ${f.status}`);
+    if (f.confidence) L.push(`- **Confidence:** ${f.confidence}`);
+    if (f.originalSeverity) L.push(`- **Severity adjusted from:** ${String(f.originalSeverity).toUpperCase()} (evidence-based re-scoring)`);
+    if (f.whyClassified) L.push(`- **Why classified this way:** ${f.whyClassified}`);
+    if (f.fix || f.remediation) L.push(`- **Recommendation:** ${f.fix || f.remediation}`);
     if (f.curl) { L.push('- **Reproduce:**'); L.push('```bash'); L.push(f.curl); L.push('```'); }
     if (f.evidence) { L.push('- **Evidence:**'); L.push('```json'); L.push(JSON.stringify(f.evidence, null, 2).slice(0, 1200)); L.push('```'); }
   });

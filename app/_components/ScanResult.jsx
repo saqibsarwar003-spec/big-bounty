@@ -5,6 +5,42 @@
 
 const SEV_COLOR = { critical: "#ff2b4e", high: "#ff7a1a", medium: "#eab308", low: "#38bdf8", info: "#8b8b8b" };
 
+const STATUS_LABEL = {
+  endpoint_discovered: "Discovered", endpoint_accessible: "Accessible",
+  endpoint_blocked_protected: "Blocked/Protected", suspicious_behavior_detected: "Suspicious",
+  vulnerability_suspected: "Suspected", vulnerability_verified: "Verified",
+  vulnerability_confirmed: "Confirmed", manual_verification_required: "Manual verify",
+  not_tested: "Not tested", observed: "Observed",
+};
+const CONF_LABEL = {
+  confirmed: "Confirmed", high_confidence: "High confidence", likely: "Likely",
+  possible: "Possible", informational: "Info", blocked: "Edge-blocked",
+  not_tested: "Not tested", false_positive_rejected: "Rejected (false positive)",
+};
+
+// Verification + structured-coverage summary (present on scans run by the new engine).
+function VerificationPanel({ v, cm }) {
+  if (!v && !cm) return null;
+  return (
+    <div className="bb-panel" style={{ marginTop: 14, borderColor: "#24303f" }}>
+      <div style={{ fontSize: 10, letterSpacing: 1, color: "#58a6ff", marginBottom: 8 }}>VERIFICATION &amp; COVERAGE</div>
+      {v && !v.error && (
+        <div style={{ fontSize: 12, color: "#9aa4af", lineHeight: 1.6 }}>
+          {v.wafPresent && <div>🛡 Edge/WAF detected{v.wafVendor ? `: ${v.wafVendor}` : ""} — challenge/block responses are not treated as vulnerabilities.</div>}
+          <div>{v.findingsIn} raw observation(s) → {v.findingsOut} after verification · {v.falsePositivesRejected || 0} false positive(s) rejected · {v.reclassified || 0} reclassified · {v.collapsedIntoSurface || 0} collapsed into attack-surface.</div>
+        </div>
+      )}
+      {cm && cm.model === "structured" && (
+        <div style={{ fontSize: 12, color: "#9aa4af", marginTop: v ? 8 : 0, lineHeight: 1.6 }}>
+          <b style={{ color: "#c9d1d9" }}>Coverage:</b> {cm.executed}/{cm.planned} phases executed
+          {cm.failed ? ` · ${cm.failed} failed` : ""}{cm.skipped ? ` · ${cm.skipped} skipped` : ""}
+          {" "}· {cm.blockedFindings} edge-blocked · {cm.manualVerificationRequired} need manual verification · {cm.credentialDependentNotRun} credential-dependent not run.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CoveragePanel({ coverage }) {
   if (!coverage) return null;
   const c = coverage;
@@ -57,6 +93,7 @@ export default function ScanResult({ result }) {
       </div>
 
       <CoveragePanel coverage={coverage} />
+      <VerificationPanel v={result.verification} cm={result.coverageModel} />
 
       <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
         {(!result.findings || result.findings.length === 0) && <div style={{ color: "#7d8590", fontSize: 13 }}>No findings for the checks run in {result.mode} mode. This is not proof the target is secure — see coverage above.</div>}
@@ -65,9 +102,17 @@ export default function ScanResult({ result }) {
             <div className="bb-frow" style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
               <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 1, color: SEV_COLOR[f.severity], border: `1px solid ${SEV_COLOR[f.severity]}`, padding: "1px 7px", borderRadius: 5, flexShrink: 0 }}>{String(f.severity).toUpperCase()}</span>
               <b style={{ fontSize: 14, wordBreak: "break-word" }}>{f.title}</b>
-              <span style={{ fontSize: 11, color: "#7d8590", flexShrink: 0 }}>[{f.tool}]</span>
+              <span style={{ fontSize: 11, color: "#7d8590", flexShrink: 0 }}>[{f.sourceModule || f.tool}]</span>
             </div>
+            {(f.confidence || f.status || f.originalSeverity) && (
+              <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+                {f.confidence && <span style={{ fontSize: 10, color: "#9aa4af", border: "1px solid #2a3441", borderRadius: 5, padding: "1px 6px" }}>confidence: {CONF_LABEL[f.confidence] || f.confidence}</span>}
+                {f.status && <span style={{ fontSize: 10, color: "#9aa4af", border: "1px solid #2a3441", borderRadius: 5, padding: "1px 6px" }}>{STATUS_LABEL[f.status] || f.status}</span>}
+                {f.originalSeverity && <span style={{ fontSize: 10, color: "#eab308", border: "1px solid #3a2f12", borderRadius: 5, padding: "1px 6px" }}>was {String(f.originalSeverity).toUpperCase()}</span>}
+              </div>
+            )}
             {f.desc && <p style={{ fontSize: 12, color: "#9aa4af", margin: "6px 0 0", lineHeight: 1.5 }}>{f.desc}</p>}
+            {f.whyClassified && <p style={{ fontSize: 11.5, color: "#7d8590", margin: "6px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>Why classified this way: {f.whyClassified}</p>}
             {f.evidence != null && (
               <details style={{ marginTop: 8 }}>
                 <summary style={{ fontSize: 11, color: "#38bdf8", cursor: "pointer" }}>EVIDENCE / PROOF</summary>
