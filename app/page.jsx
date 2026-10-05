@@ -2,11 +2,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import ScanResult from "./_components/ScanResult";
 import ScanCompare from "./_components/ScanCompare";
+import EmailExposure from "./_components/EmailExposure";
 
 const MODES = [
   { id: "basic", label: "Basic", desc: "Recon, dirs, headers, CORS, tech, secrets — non-intrusive" },
   { id: "advanced", label: "Advanced", desc: "Everything + XSS, SQLi, redirect, CVEs, real bypass attempts + remote browser", hot: true },
   { id: "custom", label: "Custom", desc: "Advanced + your own paths / instructions" },
+  { id: "exposure", label: "Email Exposure", desc: "Check if your own email is in known breaches — ownership-verified, defensive" },
 ];
 const RUNNING = new Set(["queued", "running", "dispatched"]);
 const SEV_COLOR = { critical: "#ff2b4e", high: "#ff7a1a", medium: "#eab308", low: "#38bdf8", info: "#8b8b8b" };
@@ -206,22 +208,7 @@ export default function Home() {
         </header>
 
         <section className="bb-panel">
-          <label style={{ display: "block", fontSize: 12, color: "#7d8590", marginBottom: 6 }}>TARGET URL</label>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <input
-              value={target} onChange={(e) => setTarget(e.target.value)} disabled={scanning}
-              onKeyDown={(e) => e.key === "Enter" && !scanning && authorized && start()}
-              placeholder="https://your-site.com"
-              inputMode="url" autoCapitalize="none" autoCorrect="off" spellCheck={false}
-              style={{ flex: 1, minWidth: 200, background: "#0a0e14", border: "1px solid #2a3441", borderRadius: 8, padding: "10px 12px", color: "#d7dce3", fontSize: 16, minHeight: 44 }}
-            />
-            <button onClick={scanning ? undefined : start} disabled={scanning || busy || !authorized} className="bb-btn"
-              style={{ background: (scanning || !authorized) ? "#1f2733" : "#16a34a", color: "#fff", cursor: scanning ? "wait" : (!authorized ? "not-allowed" : "pointer") }}>
-              {scanning ? `SCANNING… ${job.progress || 0}%` : busy ? "…" : "START SCAN"}
-            </button>
-          </div>
-
-          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {MODES.map((m) => (
               <button key={m.id} onClick={() => !scanning && setMode(m.id)} className="bb-mode"
                 style={{ background: mode === m.id ? (m.hot ? "rgba(255,43,78,.12)" : "rgba(22,163,74,.12)") : "transparent",
@@ -232,24 +219,45 @@ export default function Home() {
             ))}
           </div>
 
-          {mode === "custom" && (
-            <textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} disabled={scanning}
-              placeholder={"e.g. focus on /api/v1, test the session cookie, check the login at /auth/login"}
-              rows={3} style={{ width: "100%", marginTop: 10, background: "#0a0e14", border: "1px solid #2a3441", borderRadius: 8, padding: 10, color: "#d7dce3", fontSize: 13 }} />
-          )}
+          {mode !== "exposure" && (
+            <>
+              <label style={{ display: "block", fontSize: 12, color: "#7d8590", margin: "14px 0 6px" }}>TARGET URL</label>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <input
+                  value={target} onChange={(e) => setTarget(e.target.value)} disabled={scanning}
+                  onKeyDown={(e) => e.key === "Enter" && !scanning && authorized && start()}
+                  placeholder="https://your-site.com"
+                  inputMode="url" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                  style={{ flex: 1, minWidth: 200, background: "#0a0e14", border: "1px solid #2a3441", borderRadius: 8, padding: "10px 12px", color: "#d7dce3", fontSize: 16, minHeight: 44 }}
+                />
+                <button onClick={scanning ? undefined : start} disabled={scanning || busy || !authorized} className="bb-btn"
+                  style={{ background: (scanning || !authorized) ? "#1f2733" : "#16a34a", color: "#fff", cursor: scanning ? "wait" : (!authorized ? "not-allowed" : "pointer") }}>
+                  {scanning ? `SCANNING… ${job.progress || 0}%` : busy ? "…" : "START SCAN"}
+                </button>
+              </div>
 
-          <label style={{ display: "flex", gap: 10, alignItems: "flex-start", marginTop: 14, cursor: "pointer", fontSize: 13, color: "#d7dce3" }}>
-            <input type="checkbox" checked={authorized} onChange={(e) => setAuthorized(e.target.checked)} disabled={scanning}
-              style={{ width: 18, height: 18, marginTop: 1, accentColor: "#16a34a", flexShrink: 0 }} />
-            <span>I confirm that I am authorized to test this target.</span>
-          </label>
+              {mode === "custom" && (
+                <textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} disabled={scanning}
+                  placeholder={"e.g. focus on /api/v1, test the session cookie, check the login at /auth/login"}
+                  rows={3} style={{ width: "100%", marginTop: 10, background: "#0a0e14", border: "1px solid #2a3441", borderRadius: 8, padding: 10, color: "#d7dce3", fontSize: 13 }} />
+              )}
+
+              <label style={{ display: "flex", gap: 10, alignItems: "flex-start", marginTop: 14, cursor: "pointer", fontSize: 13, color: "#d7dce3" }}>
+                <input type="checkbox" checked={authorized} onChange={(e) => setAuthorized(e.target.checked)} disabled={scanning}
+                  style={{ width: 18, height: 18, marginTop: 1, accentColor: "#16a34a", flexShrink: 0 }} />
+                <span>I confirm that I am authorized to test this target.</span>
+              </label>
+            </>
+          )}
         </section>
 
-        {error && (
+        {mode === "exposure" && <EmailExposure />}
+
+        {mode !== "exposure" && error && (
           <div style={{ marginTop: 16, border: "1px solid #ff2b4e", borderRadius: 8, padding: 14, color: "#ff2b4e", fontSize: 13, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>✗ {error}</div>
         )}
 
-        {scanning && (
+        {mode !== "exposure" && scanning && (
           <div style={{ marginTop: 16, border: "1px solid #1f2733", borderRadius: 8, padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#7d8590", marginBottom: 8 }}>
               <span>{job.status === "queued" ? "Queued — starting worker…" : `Running · ${job.stage || "…"}`}</span>
@@ -260,7 +268,7 @@ export default function Home() {
           </div>
         )}
 
-        {(result || (job && !scanning)) && (
+        {mode !== "exposure" && (result || (job && !scanning)) && (
           <>
             <div style={{ marginTop: 16, display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button className="bb-btn" onClick={makeShare} style={{ background: "#1f6feb", color: "#fff" }}>🔗 Share report link</button>
@@ -280,10 +288,10 @@ export default function Home() {
           </>
         )}
 
-        {compare && <ScanCompare data={compare} />}
-        {result && <ScanResult result={result} />}
+        {mode !== "exposure" && compare && <ScanCompare data={compare} />}
+        {mode !== "exposure" && result && <ScanResult result={result} />}
 
-        {result && (
+        {mode !== "exposure" && result && (
           <div className="bb-panel" style={{ marginTop: 16 }}>
             <div style={{ fontSize: 12, color: "#7d8590", marginBottom: 10 }}>DOWNLOAD CLIENT REPORT</div>
             <div className="bb-dl">
@@ -296,7 +304,7 @@ export default function Home() {
           </div>
         )}
 
-        {history.length > 0 && (
+        {mode !== "exposure" && history.length > 0 && (
           <div className="bb-panel" style={{ marginTop: 18 }}>
             <div style={{ fontSize: 12, color: "#7d8590", marginBottom: 6 }}>SCAN HISTORY (this browser)</div>
             {history.map((h) => (

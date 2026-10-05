@@ -5,3 +5,9 @@ node_modules
 deploy.sh
 azure/orchestrator/node_modules
 azure/worker/node_modules
+
+# Secrets — never commit real env files (the .example template is committed)
+.env
+.env.*
+!.env.example
+local.settings.json
