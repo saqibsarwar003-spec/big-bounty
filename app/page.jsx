@@ -3,6 +3,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import ScanResult from "./_components/ScanResult";
 import ScanCompare from "./_components/ScanCompare";
 import EmailExposure from "./_components/EmailExposure";
+import { historyTargetKey, loadBrowserHistory, migrateBrowserHistory, saveBrowserHistory } from "../lib/history-cookie";
+import { isCurrentJobRequest, isTerminalJobStatus, normalizeJobStatus } from "../lib/job-status-ui";
 
 const MODES = [
   { id: "basic", label: "Basic", desc: "Recon, dirs, headers, CORS, tech, secrets — non-intrusive" },
@@ -10,10 +12,7 @@ const MODES = [
   { id: "custom", label: "Custom", desc: "Advanced + your own paths / instructions" },
   { id: "exposure", label: "Email Exposure", desc: "Check if your own email is in known breaches — ownership-verified, defensive" },
 ];
-const RUNNING = new Set(["queued", "running", "dispatched"]);
 const SEV_COLOR = { critical: "#ff2b4e", high: "#ff7a1a", medium: "#eab308", low: "#38bdf8", info: "#8b8b8b" };
-
-function loadHistory() { try { return JSON.parse(localStorage.getItem("bb_history") || "[]"); } catch { return []; } }
 
 export default function Home() {
   const [target, setTarget] = useState("");
@@ -30,98 +29,146 @@ export default function Home() {
   const [compare, setCompare] = useState(null);
   const [comparing, setComparing] = useState(false);
   const pollRef = useRef(null);
+  const activeJobRef = useRef(null);
+  const jobGenerationRef = useRef(0);
 
   const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
 
   const saveHistory = useCallback((list) => {
-    const trimmed = list.slice(0, 25);
-    try { localStorage.setItem("bb_history", JSON.stringify(trimmed)); } catch {}
+    const trimmed = saveBrowserHistory(list);
     setHistory(trimmed);
   }, []);
   const upsertHistory = useCallback((entry) => {
-    const list = loadHistory().filter((h) => h.jobId !== entry.jobId);
-    const prev = loadHistory().find((h) => h.jobId === entry.jobId) || {};
+    const current = loadBrowserHistory();
+    const list = current.filter((h) => h.jobId !== entry.jobId);
+    const prev = current.find((h) => h.jobId === entry.jobId) || {};
     list.unshift({ ...prev, ...entry });
     saveHistory(list);
   }, [saveHistory]);
 
-  const loadResult = useCallback(async (jobId, meta) => {
+  const loadResult = useCallback(async (jobId, meta, generation = jobGenerationRef.current) => {
+    const isCurrent = () => isCurrentJobRequest(jobId, generation, activeJobRef.current, jobGenerationRef.current);
+    if (!isCurrent()) return;
     try {
-      const r = await fetch(`/api/jobs/${jobId}/result`, { cache: "no-store" });
+      const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/result`, { cache: "no-store" });
       if (r.ok) {
         const data = await r.json();
+        if (!isCurrent()) return;
+        if (data.jobId && data.jobId !== jobId) throw new Error("The returned report does not match this scan.");
         setResult(data);
         upsertHistory({ jobId, target: data.target || data.finalTarget || meta?.target, mode: data.mode || meta?.mode,
           status: "completed", summary: data.summary || null, when: data.completedAt || Date.now() });
+      } else if (isCurrent()) {
+        setError("Scan finished, but its report could not be loaded. Select this scan from history to retry.");
       }
-    } catch {}
+    } catch (e) { if (isCurrent()) setError(e.message || "Could not load the scan report."); }
   }, [upsertHistory]);
 
   const poll = useCallback((jobId) => {
     stopPoll();
+    const generation = jobGenerationRef.current;
+    const isCurrent = () => isCurrentJobRequest(jobId, generation, activeJobRef.current, jobGenerationRef.current);
+    let inFlight = false;
+    let failures = 0;
     const tick = async () => {
+      if (!isCurrent() || inFlight) return;
+      inFlight = true;
       try {
-        const r = await fetch(`/api/jobs/${jobId}`, { cache: "no-store" });
-        const j = await r.json();
-        if (!r.ok) { setError(j.error || "status check failed"); stopPoll(); return; }
-        setJob(j);
-        if (!RUNNING.has(j.status)) {
-          stopPoll();
-          if (j.status === "completed") await loadResult(jobId, j);
-          else if (j.status === "failed") { setError("Scan failed: " + (j.error || "unknown error")); upsertHistory({ jobId, target: j.target, mode: j.mode, status: "failed", when: Date.now() }); }
+        const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+        const j = await r.json().catch(() => ({}));
+        if (!isCurrent()) return;
+        if (!r.ok) {
+          const message = j.error || `Status check failed (HTTP ${r.status})`;
+          if (r.status >= 500 || r.status === 429) {
+            failures += 1;
+            setError(`Temporary status-check problem; retrying (${failures}). ${message}`);
+            return;
+          }
+          setError(message);
+          setJob((current) => current?.jobId === jobId ? { ...current, status: "failed", error: message } : current);
+          upsertHistory({ jobId, target: j.target, mode: j.mode, status: "failed", when: Date.now() });
+          stopPoll(); return;
         }
-      } catch {}
+        failures = 0;
+        setError("");
+        setJob(j);
+        const status = normalizeJobStatus(j.status);
+        if (isTerminalJobStatus(status)) {
+          stopPoll();
+          if (status === "completed") await loadResult(jobId, j, generation);
+          else {
+            setError(`Scan ${status}: ${j.error || "no additional details were returned."}`);
+            upsertHistory({ jobId, target: j.target, mode: j.mode, status, when: Date.now() });
+          }
+        }
+      } catch (e) {
+        if (isCurrent()) {
+          failures += 1;
+          setError(`Temporary status-check problem; retrying (${failures}). ${e.message || "Network error"}`);
+        }
+      } finally { inFlight = false; }
     };
     tick();
     pollRef.current = setInterval(tick, 3000);
   }, [loadResult, upsertHistory]);
 
   const resumeJob = useCallback((jid) => {
+    stopPoll();
+    const generation = ++jobGenerationRef.current;
+    activeJobRef.current = jid;
     setBusy(true); setResult(null); setCompare(null); setShare(null); setError("");
     const u = new URL(window.location.href); u.searchParams.set("job", jid); window.history.replaceState({}, "", u);
-    try { localStorage.setItem("bb_job", jid); } catch {}
-    fetch(`/api/jobs/${jid}`, { cache: "no-store" }).then((r) => r.json()).then((j) => {
+    fetch(`/api/jobs/${encodeURIComponent(jid)}`, { cache: "no-store" }).then((r) => r.json()).then((j) => {
+      if (!isCurrentJobRequest(jid, generation, activeJobRef.current, jobGenerationRef.current)) return;
       if (j && j.jobId) {
         setJob(j); setTarget(j.target || ""); setMode(j.mode || "basic");
-        if (j.status === "completed") loadResult(j.jobId, j);
-        else if (RUNNING.has(j.status)) poll(j.jobId);
-        else if (j.status === "failed") setError("This scan failed: " + (j.error || ""));
+        const status = normalizeJobStatus(j.status);
+        if (status === "completed") loadResult(j.jobId, j, generation);
+        else if (!isTerminalJobStatus(status)) poll(j.jobId);
+        else setError(`This scan ${status}: ${j.error || "no additional details were returned."}`);
+      } else if (generation === jobGenerationRef.current) {
+        setError(j.error || "This scan could not be found.");
       }
-    }).catch(() => {}).finally(() => setBusy(false));
+    }).catch((e) => { if (generation === jobGenerationRef.current) setError(e.message || "Could not resume this scan."); })
+      .finally(() => { if (generation === jobGenerationRef.current) setBusy(false); });
   }, [poll, loadResult]);
 
   useEffect(() => {
-    setHistory(loadHistory());
+    setHistory(migrateBrowserHistory());
     const url = new URL(window.location.href);
-    let jid = url.searchParams.get("job");
-    if (!jid) { try { jid = localStorage.getItem("bb_job"); } catch {} }
+    const jid = url.searchParams.get("job");
     if (jid) resumeJob(jid);
-    return stopPoll;
+    return () => { jobGenerationRef.current += 1; activeJobRef.current = null; stopPoll(); };
   }, [resumeJob]);
 
   async function start() {
     if (!target.trim()) { setError("Enter a target URL"); return; }
     if (!authorized) { setError("Please confirm you are authorized to test this target."); return; }
     if (mode === "custom" && !instructions.trim()) { setError("Custom mode needs instructions"); return; }
+    stopPoll();
+    const generation = ++jobGenerationRef.current;
+    activeJobRef.current = null;
     setBusy(true); setError(""); setResult(null); setJob(null); setShare(null); setCompare(null);
     try {
       const body = { target: target.trim(), mode, authorized: true, clientJobKey: `${target.trim()}|${mode}|${Date.now()}` };
       if (mode === "custom") body.params = { custom: instructions };
       const res = await fetch("/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const j = await res.json();
+      if (generation !== jobGenerationRef.current) return;
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-      try { localStorage.setItem("bb_job", j.jobId); } catch {}
+      if (!j.jobId) throw new Error("The scanning service did not return a job ID.");
+      activeJobRef.current = j.jobId;
       const u = new URL(window.location.href); u.searchParams.set("job", j.jobId); window.history.replaceState({}, "", u);
       setJob({ jobId: j.jobId, status: j.status || "queued", progress: 0 });
       upsertHistory({ jobId: j.jobId, target: target.trim(), mode, status: j.status || "queued", when: Date.now() });
       poll(j.jobId);
-    } catch (e) { setError(e.message || "Could not start scan"); }
-    finally { setBusy(false); }
+    } catch (e) { if (generation === jobGenerationRef.current) setError(e.message || "Could not start scan"); }
+    finally { if (generation === jobGenerationRef.current) setBusy(false); }
   }
 
   function reset() {
-    stopPoll(); setJob(null); setResult(null); setError(""); setShare(null); setCompare(null); setAuthorized(false);
-    try { localStorage.removeItem("bb_job"); } catch {}
+    stopPoll(); jobGenerationRef.current += 1; activeJobRef.current = null;
+    setJob(null); setResult(null); setError(""); setShare(null); setCompare(null); setAuthorized(false); setBusy(false);
     const u = new URL(window.location.href); u.searchParams.delete("job"); window.history.replaceState({}, "", u);
   }
 
@@ -140,7 +187,8 @@ export default function Home() {
   async function compareWithPrevious() {
     if (!job?.jobId || !result) return;
     const tgt = result.target || result.finalTarget;
-    const prior = loadHistory().find((h) => h.jobId !== job.jobId && h.status === "completed" && h.target === tgt);
+    const targetKey = historyTargetKey(tgt);
+    const prior = loadBrowserHistory().find((h) => h.jobId !== job.jobId && h.status === "completed" && h.targetKey === targetKey);
     if (!prior) { setError("No previous completed scan of this target in your history to compare against."); return; }
     setComparing(true); setError(""); setCompare(null);
     try {
@@ -173,8 +221,9 @@ export default function Home() {
     finally { setDownloading(""); }
   }
 
-  const scanning = job && RUNNING.has(job.status);
-  const priorExists = result && loadHistory().some((h) => h.jobId !== job?.jobId && h.status === "completed" && h.target === (result.target || result.finalTarget));
+  const scanning = job && !isTerminalJobStatus(job.status);
+  const resultTargetKey = result && historyTargetKey(result.target || result.finalTarget);
+  const priorExists = result && history.some((h) => h.jobId !== job?.jobId && h.status === "completed" && h.targetKey === resultTargetKey);
 
   return (
     <div className="bb-root">
