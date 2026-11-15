@@ -15,6 +15,7 @@
 
 import { app } from '@azure/functions';
 import { randomUUID } from 'node:crypto';
+import { vmActionForWork } from './vm-policy.mjs';
 import {
   PARTITION, AUTH_PARTITION, AUTH_TTL_DAYS,
   queueClient, jobsTable, authTable, verifyHmac, readBody,
@@ -127,13 +128,19 @@ app.http('createJob', {
     };
     await queueClient().sendMessage(Buffer.from(JSON.stringify(msg)).toString('base64'));
 
-    // Wake the worker VM if it's asleep (fire-and-forget; idleVmStopper parks it later).
-    (async () => {
-      try {
-        const ps = await vmPowerState();
-        if (ps === 'deallocated' || ps === 'stopped') await vmAction('start');
-      } catch (e) { context.warn(`VM start skipped: ${e.message}`); }
-    })();
+    // Request an immediate wake. If start fails or remains pending, idleVmStopper
+    // retries while this durable queue/job state still indicates work.
+    try {
+      const ps = await vmPowerState();
+      const action = vmActionForWork({ queueDepth: 1, activeJobs: 1, powerState: ps });
+      if (action === 'start') {
+        const result = await vmAction(action);
+        if (!result.ok) throw new Error(`HTTP ${result.status}`);
+        context.log(`VM wake requested for queued work (HTTP ${result.status})`);
+      }
+    } catch (e) {
+      context.warn(`VM start request deferred to idleVmStopper: ${e.message}`);
+    }
 
     return { status: 202, jsonBody: { jobId, status: 'queued', domain, authorizedUntil: rec.expiresAt } };
   },
@@ -188,9 +195,16 @@ app.timer('idleVmStopper', {
       let active = 0;
       const it = jobsTable().listEntities({ queryOptions: { filter: `PartitionKey eq '${PARTITION}' and (status eq 'queued' or status eq 'running' or status eq 'dispatched')` } });
       for await (const _ of it) { active++; break; }
-      if (depth === 0 && active === 0) {
-        const ps = await vmPowerState();
-        if (ps === 'running' || ps === 'starting') { await vmAction('deallocate'); context.log('idle: deallocated VM'); }
+      const ps = await vmPowerState();
+      const action = vmActionForWork({ queueDepth: depth, activeJobs: active, powerState: ps });
+      if (action === 'start') {
+        const result = await vmAction(action);
+        if (!result.ok) throw new Error(`worker wake failed: HTTP ${result.status}`);
+        context.log(`work pending: requested VM start (queue=${depth}, active=${active}, HTTP ${result.status})`);
+      } else if (action === 'deallocate') {
+        const result = await vmAction(action);
+        if (!result.ok) throw new Error(`worker deallocation failed: HTTP ${result.status}`);
+        context.log('idle: deallocated VM');
       }
     } catch (e) { context.warn(`idleVmStopper: ${e.message}`); }
   },
