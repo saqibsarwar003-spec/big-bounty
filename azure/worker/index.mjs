@@ -16,6 +16,7 @@
 import { QueueClient } from '@azure/storage-queue';
 import { TableClient } from '@azure/data-tables';
 import { BlobServiceClient } from '@azure/storage-blob';
+import { resolveJobTimeoutMs } from './config.mjs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -33,7 +34,7 @@ const RESULTS = process.env.BIGBOUNTY_RESULTS_CONTAINER || 'bigbounty-results';
 const JOB_PART = 'job', AUTH_PART = 'target';
 
 const MAX_CONCURRENCY = Math.max(1, Number(process.env.BIGBOUNTY_MAX_CONCURRENCY || '1'));   // tiny VM -> 1
-const JOB_TIMEOUT_MS = Number(process.env.BIGBOUNTY_JOB_TIMEOUT_MS || '600000');             // 10 min
+const JOB_TIMEOUT_MS = resolveJobTimeoutMs(process.env);                                     // default/max 30 min
 const MAX_ATTEMPTS = Number(process.env.BIGBOUNTY_MAX_ATTEMPTS || '3');
 const IDLE_MS = Number(process.env.BIGBOUNTY_POLL_IDLE_MS || '5000');
 const PROGRESS_THROTTLE_MS = 3000;
