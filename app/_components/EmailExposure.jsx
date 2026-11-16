@@ -1,59 +1,32 @@
 "use client";
 import { useState, useCallback } from "react";
 
-// Defensive Email Exposure Check.
-// Flow: enter email -> verify ownership with an emailed one-time code -> results.
-// No sensitive material (passwords, stealer-log contents, PII, enrichment) is ever
-// requested from or shown by this component — the server allowlists everything.
+// Defensive Email Exposure Check. Results are server-allowlisted: no passwords,
+// stealer-log contents, personal data, or enrichment are shown.
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function EmailExposure() {
-  const [step, setStep] = useState("email"); // email | code | results
+  const [step, setStep] = useState("email"); // email | results
   const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
-  const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [delivered, setDelivered] = useState(true);
   const [result, setResult] = useState(null);
 
   const reset = useCallback(() => {
-    setStep("email"); setCode(""); setToken(""); setError(""); setNotice("");
-    setResult(null); setDelivered(true);
+    setStep("email"); setError(""); setResult(null);
   }, []);
 
-  async function sendCode() {
+  async function runCheck() {
     const e = email.trim().toLowerCase();
     if (!EMAIL_RE.test(e) || e.length > 254) { setError("Enter a valid email address."); return; }
-    setBusy(true); setError(""); setNotice(""); setResult(null);
+    setBusy(true); setError(""); setResult(null);
     try {
-      const res = await fetch("/api/exposure/start", {
+      const res = await fetch("/api/exposure/check", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: e }),
       });
       const j = await res.json();
-      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-      setToken(j.token);
-      setDelivered(j.delivery === "sent");
-      setNotice(j.message || "Enter the verification code we sent to your email.");
-      setStep("code");
-    } catch (err) { setError(err.message || "Could not start the check."); }
-    finally { setBusy(false); }
-  }
-
-  async function verifyAndScan() {
-    const c = code.trim().toUpperCase();
-    if (c.length < 6) { setError("Enter the code from your email."); return; }
-    setBusy(true); setError("");
-    try {
-      const res = await fetch("/api/exposure/check", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim().toLowerCase(), code: c, token }),
-      });
-      const j = await res.json();
-      if (res.status === 401) { setError(j.error || "Verification failed. Check the code and try again."); return; }
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
       setResult(j);
       setStep("results");
@@ -111,64 +84,38 @@ export default function EmailExposure() {
         <div className="ee-steps">
           <span className="ee-step"><span className={`ee-dot ${step === "email" ? "on" : "done"}`}>{step === "email" ? "1" : "✓"}</span>EMAIL</span>
           <span className="ee-sep" />
-          <span className="ee-step"><span className={`ee-dot ${step === "code" ? "on" : step === "results" ? "done" : ""}`}>{step === "results" ? "✓" : "2"}</span>VERIFY</span>
-          <span className="ee-sep" />
-          <span className="ee-step"><span className={`ee-dot ${step === "results" ? "on" : ""}`}>3</span>RESULTS</span>
+          <span className="ee-step"><span className={`ee-dot ${step === "results" ? "on" : ""}`}>2</span>RESULTS</span>
         </div>
 
         <p style={{ fontSize: 12, color: "#7d8590", lineHeight: 1.55, margin: "0 0 16px" }}>
-          Check whether <b style={{ color: "#d7dce3" }}>your own</b> email address appears in known data breaches.
-          To protect privacy, you must verify you control the mailbox before any results are shown. Passwords and other
-          sensitive data are never displayed — only breach names, dates, affected services, and security guidance.
+          Check whether an email address appears in known data breaches. Only check addresses you own or are authorized to assess.
+          Passwords and other sensitive data are never displayed — only breach names, dates, affected services, and security guidance.
         </p>
 
         {step === "email" && (
           <>
-            <label className="ee-label">YOUR EMAIL ADDRESS</label>
+            <label className="ee-label">EMAIL ADDRESS</label>
             <input
               className="ee-input" value={email} onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !busy && sendCode()}
+              onKeyDown={(e) => e.key === "Enter" && !busy && runCheck()}
               type="email" inputMode="email" autoCapitalize="none" autoCorrect="off" spellCheck={false}
               placeholder="you@example.com" disabled={busy}
             />
             <div style={{ marginTop: 14 }}>
-              <button className="ee-btn primary" onClick={sendCode} disabled={busy}>
-                {busy ? "SENDING CODE…" : "SEND VERIFICATION CODE"}
+              <button className="ee-btn primary" onClick={runCheck} disabled={busy}>
+                {busy ? "CHECKING…" : "CHECK EMAIL EXPOSURE"}
               </button>
             </div>
             <div className="ee-hint">
-              We&apos;ll email a one-time code to confirm the address is yours. This check is for your own accounts — it is
-              not a people-search or lookup tool for other individuals.
+              This check does not require mailbox verification. Use it only for an address you own or have permission to assess.
             </div>
-          </>
-        )}
-
-        {step === "code" && (
-          <>
-            {notice && <div className={`ee-msg ${delivered ? "ee-info" : "ee-warn"}`} style={{ marginBottom: 14 }}>{notice}</div>}
-            <label className="ee-label">VERIFICATION CODE FOR <span className="ee-mono">{email.trim().toLowerCase()}</span></label>
-            <input
-              className="ee-input ee-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())}
-              onKeyDown={(e) => e.key === "Enter" && !busy && verifyAndScan()}
-              autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={12}
-              placeholder="XXXXXXXX" disabled={busy}
-            />
-            <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-              <button className="ee-btn primary" style={{ flex: 2, minWidth: 180 }} onClick={verifyAndScan} disabled={busy}>
-                {busy ? "VERIFYING & SCANNING…" : "VERIFY & RUN CHECK"}
-              </button>
-              <button className="ee-btn ghost" style={{ flex: 1, minWidth: 120 }} onClick={reset} disabled={busy}>
-                Change email
-              </button>
-            </div>
-            <div className="ee-hint">The code expires in 10 minutes. Didn&apos;t get it? Check spam, or change the email to resend.</div>
           </>
         )}
 
         {step === "results" && result && (
           <>
             <div style={{ fontSize: 13, color: "#7d8590", marginBottom: 4 }}>
-              Verified results for <span className="ee-mono" style={{ color: "#d7dce3" }}>{result.email}</span>
+              Exposure results for <span className="ee-mono" style={{ color: "#d7dce3" }}>{result.email}</span>
             </div>
 
             <div className="ee-ov">

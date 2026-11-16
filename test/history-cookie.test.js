@@ -50,3 +50,11 @@ test('different query-bearing scan targets have distinct comparison keys without
   const cookie = H.buildHistoryCookie(H.limitHistory([{ ...entry(1), target: one }]));
   assert.doesNotMatch(decodeURIComponent(cookie.split(';', 1)[0]), /q=one/);
 });
+
+test('browser history stores metadata only and never includes the private access token', () => {
+  const token = 'a'.repeat(64);
+  const saved = H.limitHistory([{ ...entry(1), accessToken: token }]);
+  assert.equal(saved[0].accessToken, undefined);
+  const encoded = H.buildHistoryCookie(saved).split(';', 1)[0];
+  assert.doesNotMatch(decodeURIComponent(encoded), new RegExp(token));
+});

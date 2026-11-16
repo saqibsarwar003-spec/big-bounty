@@ -1,4 +1,6 @@
 import { createJob } from '../../../lib/control-plane';
+import { randomBytes } from 'node:crypto';
+import { buildBrowserAccessCookie, readBrowserAccessToken } from '../../../lib/job-access';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,14 +24,21 @@ export async function POST(request) {
 
   const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0].trim();
   const clientUserAgent = request.headers.get('user-agent') || '';
+  const existingAccessToken = readBrowserAccessToken(request.headers.get('cookie'));
+  const accessToken = existingAccessToken || randomBytes(32).toString('hex');
 
   try {
     const r = await createJob({
       target, mode, authorized: true,
-      clientJobKey: body.clientJobKey, params: body.params,
+      clientJobKey: body.clientJobKey, params: body.params, accessToken,
       requester: 'web', clientUserAgent, clientIp,
     });
-    return Response.json(r.data || { error: 'control plane error' }, { status: r.status, headers: { 'Cache-Control': 'no-store' } });
+    const headers = { 'Cache-Control': 'no-store' };
+    if (r.ok && !existingAccessToken) {
+      const secure = new URL(request.url).protocol === 'https:';
+      headers['Set-Cookie'] = buildBrowserAccessCookie(accessToken, secure);
+    }
+    return Response.json(r.data || { error: 'control plane error' }, { status: r.status, headers });
   } catch (e) {
     if (e.code === 'CONTROL_PLANE_UNCONFIGURED') {
       return Response.json({ error: 'The scanning backend is not configured yet.' }, { status: 503 });

@@ -10,7 +10,7 @@ const MODES = [
   { id: "basic", label: "Basic", desc: "Recon, dirs, headers, CORS, tech, secrets — non-intrusive" },
   { id: "advanced", label: "Advanced", desc: "Everything + XSS, SQLi, redirect, CVEs, real bypass attempts + remote browser", hot: true },
   { id: "custom", label: "Custom", desc: "Advanced + your own paths / instructions" },
-  { id: "exposure", label: "Email Exposure", desc: "Check if your own email is in known breaches — ownership-verified, defensive" },
+  { id: "exposure", label: "Email Exposure", desc: "Check breach exposure for an email you own or are authorized to assess — sanitized results" },
 ];
 const SEV_COLOR = { critical: "#ff2b4e", high: "#ff7a1a", medium: "#eab308", low: "#38bdf8", info: "#8b8b8b" };
 
@@ -192,7 +192,7 @@ export default function Home() {
     if (!prior) { setError("No previous completed scan of this target in your history to compare against."); return; }
     setComparing(true); setError(""); setCompare(null);
     try {
-      const r = await fetch(`/api/compare?a=${encodeURIComponent(prior.jobId)}&b=${encodeURIComponent(job.jobId)}`, { cache: "no-store" });
+      const r = await fetch("/api/compare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ a: prior.jobId, b: job.jobId }) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "compare failed");
       setCompare(d);
@@ -252,7 +252,7 @@ export default function Home() {
           <h1 style={{ fontSize: 30, margin: 0, color: "#ff2b4e", letterSpacing: 2 }}>⚔ BIG BOUNTY</h1>
           <p style={{ color: "#7d8590", fontSize: 13, margin: "8px 0 0", lineHeight: 1.5 }}>
             Real-evidence security testing. Enter a URL, confirm you&apos;re authorized, and press Start — the scan runs
-            on dedicated infrastructure, survives refreshes, and you can share or download the report. Only test targets you own or are authorized to assess.
+            on dedicated infrastructure and survives refreshes. Results stay private to this browser unless you choose “Share report link.” Only test targets you own or are authorized to assess.
           </p>
         </header>
 
@@ -355,7 +355,8 @@ export default function Home() {
 
         {mode !== "exposure" && history.length > 0 && (
           <div className="bb-panel" style={{ marginTop: 18 }}>
-            <div style={{ fontSize: 12, color: "#7d8590", marginBottom: 6 }}>SCAN HISTORY (this browser)</div>
+            <div style={{ fontSize: 12, color: "#7d8590", marginBottom: 6 }}>SCAN HISTORY (this browser only)</div>
+            <div style={{ fontSize: 11, color: "#6b7580", marginBottom: 8 }}>Private access keys are saved in this browser&apos;s cookie. To open a result on another device, create and use its explicit share link.</div>
             {history.map((h) => (
               <div key={h.jobId} className="bb-hrow">
                 <button onClick={() => resumeJob(h.jobId)} style={{ background: "none", border: 0, color: "#58a6ff", cursor: "pointer", padding: 0, fontSize: 12, textAlign: "left", flex: 1, minWidth: 160, wordBreak: "break-all" }}>

@@ -1,4 +1,6 @@
 import { createShareToken } from '../../../lib/share-token';
+import { getJob } from '../../../lib/control-plane';
+import { readBrowserAccessToken } from '../../../lib/job-access';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,11 +18,17 @@ export async function POST(request) {
   try { body = await request.json(); }
   catch { return Response.json({ error: 'Invalid JSON body' }, { status: 400 }); }
 
-  const jobId = (body.jobId || '').trim();
+  const jobId = String(body.jobId || '').trim();
   if (!jobId) return Response.json({ error: 'jobId required' }, { status: 400 });
+  const accessToken = readBrowserAccessToken(request.headers.get('cookie'));
+  if (!accessToken) {
+    return Response.json({ error: 'This scan can only be shared from the browser that created it.' }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
+  }
   const ttlDays = Math.min(Math.max(Number(body.ttlDays) || 7, 1), 90);
 
   try {
+    const ownerCheck = await getJob(jobId, accessToken);
+    if (!ownerCheck.ok) return Response.json({ error: 'This scan is private to the browser that created it.' }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
     const { token, exp, jti } = createShareToken(jobId, signingKey(), { ttlMs: ttlDays * 86400000 });
     return Response.json({
       token, jti,

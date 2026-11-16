@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node --test test/custom-mode.test.js test/verify.test.js test/safety.test.js test/resilience.test.js test/job-state.test.js test/history-cookie.test.js test/job-status-ui.test.js test/exposure.test.js test/exposure-integration.test.js test/worker-timeout.test.js test/vm-policy.test.js",
+    "test": "node --test test/custom-mode.test.js test/verify.test.js test/safety.test.js test/resilience.test.js test/job-state.test.js test/history-cookie.test.js test/job-access.test.js test/job-status-ui.test.js test/exposure.test.js test/exposure-integration.test.js test/worker-timeout.test.js test/vm-policy.test.js",
     "deploy": "vercel --prod"
   },
   "dependencies": {

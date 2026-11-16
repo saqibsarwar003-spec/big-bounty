@@ -1,42 +1,23 @@
 'use strict';
-// Email Exposure Check tests — ownership verification + the defensive allowlist.
+// Email Exposure Check tests — direct address handling + the defensive allowlist.
 // Run: node --test test/exposure.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const V = require('../lib/email-verify');
+const E = require('../lib/email');
 const { normalizeIntelBase } = require('../lib/sources/intelbase');
 const { runExposureCheck } = require('../lib/exposure');
 
-const KEY = 'test-signing-key-123';
-
 // ---------------------------------------------------------------------------
-// Ownership verification
+// Direct email input handling (the checker no longer requires a mailbox code).
 // ---------------------------------------------------------------------------
-test('email validation', () => {
-  assert.equal(V.validEmail('bob@example.com'), true);
-  assert.equal(V.validEmail('BOB@Example.COM'), true);
-  assert.equal(V.validEmail('nope'), false);
-  assert.equal(V.validEmail('a@b'), false);
-  assert.equal(V.validEmail(''), false);
-});
-
-test('issue -> verify round-trips; plaintext code is NOT in the token', () => {
-  const { code, token } = V.issueChallenge('bob@example.com', KEY);
-  assert.ok(code && code.length === 8);
-  assert.ok(!token.includes(code), 'token must not contain the plaintext code');
-  assert.equal(V.verifyChallenge('bob@example.com', code, token, KEY).ok, true);
-  // case-insensitive email + code
-  assert.equal(V.verifyChallenge('BOB@example.com', code.toLowerCase(), token, KEY).ok, true);
-});
-
-test('verification rejects wrong code, wrong email, tampered token, expiry', () => {
-  const { code, token } = V.issueChallenge('bob@example.com', KEY);
-  assert.equal(V.verifyChallenge('bob@example.com', 'WRONGXXX', token, KEY).ok, false);
-  assert.equal(V.verifyChallenge('eve@example.com', code, token, KEY).ok, false);     // can't verify someone else's email
-  const tampered = token.slice(0, -2) + (token.slice(-1) === 'a' ? 'bb' : 'aa');
-  assert.equal(V.verifyChallenge('bob@example.com', code, tampered, KEY).ok, false);
-  const expired = V.issueChallenge('bob@example.com', KEY, { ttlMs: -1000 });
-  assert.equal(V.verifyChallenge('bob@example.com', expired.code, expired.token, KEY).reason, 'code expired');
+test('email input is normalized and validated before a direct check', () => {
+  assert.equal(E.normEmail('  Bob@Example.COM  '), 'bob@example.com');
+  assert.equal(E.validEmail('bob@example.com'), true);
+  assert.equal(E.validEmail('BOB@Example.COM'), true);
+  assert.equal(E.validEmail('nope'), false);
+  assert.equal(E.validEmail('a@b'), false);
+  assert.equal(E.validEmail(''), false);
+  assert.equal(E.validEmail('a'.repeat(250) + '@example.com'), false);
 });
 
 // ---------------------------------------------------------------------------

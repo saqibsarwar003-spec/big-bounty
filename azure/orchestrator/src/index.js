@@ -21,6 +21,7 @@ import {
   queueClient, jobsTable, authTable, verifyHmac, readBody,
   normalizeDomain, isPublicHost, isAuthorizedRecord, recordAttestation,
   vmPowerState, vmAction, readResultBlob,
+  isValidJobAccessToken, hashJobAccessToken, matchesJobAccessToken,
 } from './lib.js';
 
 async function auth(request, context) {
@@ -71,6 +72,8 @@ app.http('createJob', {
     if (!a.ok) return a.res;
     const b = a.json || {};
     if (!b.target || !b.mode) return { status: 400, jsonBody: { error: 'target and mode are required' } };
+    if (!isValidJobAccessToken(b.accessToken)) return { status: 400, jsonBody: { error: 'private browser access key required' } };
+    const accessTokenHash = hashJobAccessToken(b.accessToken);
 
     // The single user-facing confirmation. Required, and recorded server-side.
     if (b.authorized !== true) {
@@ -109,14 +112,17 @@ app.http('createJob', {
     // retried/refreshed request returns the SAME job instead of starting a new one.
     if (b.clientJobKey) {
       const dupes = table.listEntities({ queryOptions: { filter: `PartitionKey eq '${PARTITION}' and clientJobKey eq '${String(b.clientJobKey).replace(/'/g, "''")}'` } });
-      for await (const d of dupes) return { status: 200, jsonBody: { jobId: d.rowKey, status: d.status, deduped: true } };
+      for await (const d of dupes) {
+        if (!matchesJobAccessToken(b.accessToken, d.accessTokenHash)) return { status: 409, jsonBody: { error: 'duplicate scan request belongs to another browser' } };
+        return { status: 200, jsonBody: { jobId: d.rowKey, status: d.status, deduped: true } };
+      }
     }
 
     await table.createEntity({
       partitionKey: PARTITION, rowKey: jobId,
       status: 'queued', target: b.target, mode: b.mode, domain,
       authScope: domain, authAttestationId: rec.attestationId, authVerifiedAt: rec.verifiedAt,
-      clientJobKey: b.clientJobKey ?? '', progress: 0, attempts: 0, createdAt: now, updatedAt: now,
+      clientJobKey: b.clientJobKey ?? '', accessTokenHash, progress: 0, attempts: 0, createdAt: now, updatedAt: now,
     });
 
     // The queue message carries the attestation so the worker can independently
@@ -148,12 +154,21 @@ app.http('createJob', {
 
 // ---- GET /api/jobs/{id} : status + result pointer ----
 app.http('getJob', {
-  methods: ['GET'], authLevel: 'function', route: 'jobs/{id}',
+  methods: ['GET', 'POST'], authLevel: 'function', route: 'jobs/{id}',
   handler: async (request, context) => {
-    const v = verifyHmac('', request.headers.get('x-signature'), request.headers.get('x-timestamp'));
-    if (!v.ok) return { status: 401, jsonBody: { error: 'unauthorized' } };
+    let accessToken = null;
+    if (request.method === 'POST') {
+      const a = await auth(request, context);
+      if (!a.ok) return a.res;
+      accessToken = a.json?.accessToken;
+      if (!isValidJobAccessToken(accessToken)) return { status: 401, jsonBody: { error: 'private browser access key required' } };
+    } else {
+      const v = verifyHmac('', request.headers.get('x-signature'), request.headers.get('x-timestamp'));
+      if (!v.ok) return { status: 401, jsonBody: { error: 'unauthorized' } };
+    }
     try {
       const e = await jobsTable().getEntity(PARTITION, request.params.id);
+      if (accessToken && !matchesJobAccessToken(accessToken, e.accessTokenHash)) return { status: 404, jsonBody: { error: 'not found' } };
       return { status: 200, jsonBody: {
         jobId: e.rowKey, status: e.status, mode: e.mode, target: e.target, domain: e.domain,
         progress: e.progress ?? 0, stage: e.stage ?? null,
@@ -168,13 +183,22 @@ app.http('getJob', {
 
 // ---- GET /api/jobs/{id}/result : full stored result (findings/evidence/AI) ----
 app.http('getJobResult', {
-  methods: ['GET'], authLevel: 'function', route: 'jobs/{id}/result',
+  methods: ['GET', 'POST'], authLevel: 'function', route: 'jobs/{id}/result',
   handler: async (request, context) => {
-    const v = verifyHmac('', request.headers.get('x-signature'), request.headers.get('x-timestamp'));
-    if (!v.ok) return { status: 401, jsonBody: { error: 'unauthorized' } };
+    let accessToken = null;
+    if (request.method === 'POST') {
+      const a = await auth(request, context);
+      if (!a.ok) return a.res;
+      accessToken = a.json?.accessToken;
+      if (!isValidJobAccessToken(accessToken)) return { status: 401, jsonBody: { error: 'private browser access key required' } };
+    } else {
+      const v = verifyHmac('', request.headers.get('x-signature'), request.headers.get('x-timestamp'));
+      if (!v.ok) return { status: 401, jsonBody: { error: 'unauthorized' } };
+    }
     let e;
     try { e = await jobsTable().getEntity(PARTITION, request.params.id); }
     catch { return { status: 404, jsonBody: { error: 'not found' } }; }
+    if (accessToken && !matchesJobAccessToken(accessToken, e.accessTokenHash)) return { status: 404, jsonBody: { error: 'not found' } };
     if (!e.resultBlob) return { status: 409, jsonBody: { error: 'result not ready', status: e.status } };
     try {
       const json = await readResultBlob(e.resultBlob);

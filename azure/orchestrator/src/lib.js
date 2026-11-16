@@ -16,6 +16,8 @@ import { QueueServiceClient } from '@azure/storage-queue';
 import { TableClient } from '@azure/data-tables';
 import { BlobServiceClient } from '@azure/storage-blob';
 import { ManagedIdentityCredential } from '@azure/identity';
+import { isValidJobAccessToken, hashJobAccessToken, matchesJobAccessToken } from './job-access.js';
+export { isValidJobAccessToken, hashJobAccessToken, matchesJobAccessToken };
 
 const CONN = process.env.AzureWebJobsStorage;
 const JOBS_QUEUE = process.env.BIGBOUNTY_JOBS_QUEUE || 'bigbounty-jobs';
